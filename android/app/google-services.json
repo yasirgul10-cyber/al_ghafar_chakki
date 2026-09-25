@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "399515449081",
+    "project_id": "al-ghafar-chakki",
+    "storage_bucket": "al-ghafar-chakki.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:399515449081:android:3f9bb59c12c1a7a318d428",
+        "android_client_info": {
+          "package_name": "com.example.al_ghafar_chakki"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDEhg7oCSIrwi2xe-vDUlrbkLtW5jy93vU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
