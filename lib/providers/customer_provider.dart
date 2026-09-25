@@ -1,5 +1,8 @@
-import 'package:flutter/material.dart';
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/material.dart';
+
 import '../models/customer_model.dart';
 
 class CustomerProvider with ChangeNotifier {
@@ -9,6 +12,9 @@ class CustomerProvider with ChangeNotifier {
   bool _isLoading = false;
   String? _errorMessage;
 
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>?
+      _customersSubscription;
+
   List<CustomerModel> get customers => _customers;
   bool get isLoading => _isLoading;
   String? get errorMessage => _errorMessage;
@@ -17,98 +23,214 @@ class CustomerProvider with ChangeNotifier {
   CollectionReference<Map<String, dynamic>> get _customerCollection =>
       _firestore.collection('customers');
 
-  /// 1. Real-time stream to listen for Customer updates from Firestore
-  void fetchCustomers() {
-    _isLoading = true;
-    notifyListeners();
+  /// 📞 پاکستان کے فون نمبر کو ایک یکساں فارمیٹ (92XXXXXXXXXX) میں کنورٹ کرتا ہے
+  String formatPakistanPhone(String phone) {
+    var value = phone.trim().replaceAll(RegExp(r'[\s-]'), '');
 
-    _customerCollection.snapshots().listen(
+    if (value.startsWith('+92')) {
+      value = value.substring(1);
+    } else if (value.startsWith('0')) {
+      value = '92${value.substring(1)}';
+    }
+
+    return value;
+  }
+
+  /// 🔄 1. تمام کسٹمرز کا ریئل ٹائم اسٹریم (نام کے لحاظ سے ترتیب وار)
+  void fetchCustomers() {
+    _customersSubscription?.cancel();
+
+    _setLoading(true);
+    _errorMessage = null;
+
+    _customersSubscription = _customerCollection
+        .orderBy('name')
+        .snapshots()
+        .listen(
       (snapshot) {
         _customers = snapshot.docs.map((doc) {
-          return CustomerModel.fromMap(doc.data(), doc.id);
+          return CustomerModel.fromMap(
+            doc.data(),
+            doc.id,
+          );
         }).toList();
-        _isLoading = false;
+
+        _setLoading(false);
         _errorMessage = null;
-        notifyListeners();
       },
       onError: (error) {
-        _isLoading = false;
-        _errorMessage = error.toString();
+        _setLoading(false);
+        _errorMessage = 'کسٹمرز کا ڈیٹا لوڈ کرنے میں ناکامی: $error';
         notifyListeners();
       },
     );
   }
 
-  /// 2. Add New Customer to Firestore
+  /// ➕ 2. نیا کسٹمر شامل کریں (ڈپلیکیٹ فون نمبر چیک کے ساتھ)
   Future<bool> addCustomer(CustomerModel customer) async {
+    _setLoading(true);
+    _errorMessage = null;
+
     try {
-      _isLoading = true;
-      notifyListeners();
+      if (customer.name.trim().isEmpty) {
+        throw Exception('کسٹمر کا نام درج کرنا ضروری ہے۔');
+      }
 
-      await _customerCollection.add(customer.toMap());
+      if (customer.phone.trim().isEmpty) {
+        throw Exception('کسٹمر کا فون نمبر درج کرنا ضروری ہے۔');
+      }
 
-      _isLoading = false;
-      notifyListeners();
+      final normalizedPhone = formatPakistanPhone(customer.phone);
+
+      // چیک کریں کہ یہ نمبر پہلے سے موجود تو نہیں
+      final existingCustomer = await _customerCollection
+          .where(
+            'phone',
+            isEqualTo: normalizedPhone,
+          )
+          .limit(1)
+          .get();
+
+      if (existingCustomer.docs.isNotEmpty) {
+        throw Exception('یہ فون نمبر پہلے سے رجسٹرڈ ہے۔');
+      }
+
+      final customerRef = _customerCollection.doc();
+
+      await customerRef.set({
+        'name': customer.name.trim(),
+        'phone': normalizedPhone,
+        'address': customer.address.trim(),
+        'balance': customer.balance,
+        'createdAt': Timestamp.fromDate(DateTime.now()),
+      });
+
+      _setLoading(false);
       return true;
     } catch (e) {
-      _isLoading = false;
-      _errorMessage = e.toString();
-      notifyListeners();
+      _setError('کسٹمر شامل کرنے میں ناکامی: $e');
+      _setLoading(false);
       return false;
     }
   }
 
-  /// 3. Update Existing Customer Details
+  /// ✏️ 3. کسٹمر کی تفصیلات اپڈیٹ کریں
   Future<bool> updateCustomer(CustomerModel customer) async {
+    _setLoading(true);
+    _errorMessage = null;
+
     try {
-      _isLoading = true;
-      notifyListeners();
+      if (customer.id.trim().isEmpty) {
+        throw Exception('کسٹمر ID غائب ہے۔');
+      }
 
-      await _customerCollection.doc(customer.id).update(customer.toMap());
+      if (customer.name.trim().isEmpty) {
+        throw Exception('کسٹمر کا نام درج کرنا ضروری ہے۔');
+      }
 
-      _isLoading = false;
-      notifyListeners();
+      if (customer.phone.trim().isEmpty) {
+        throw Exception('کسٹمر کا فون نمبر درج کرنا ضروری ہے۔');
+      }
+
+      final normalizedPhone = formatPakistanPhone(customer.phone);
+
+      // چیک کریں کہ یہ فون نمبر کسی دوسرے کسٹمر کے پاس تو نہیں
+      final existingCustomer = await _customerCollection
+          .where(
+            'phone',
+            isEqualTo: normalizedPhone,
+          )
+          .limit(2)
+          .get();
+
+      final duplicateExists = existingCustomer.docs.any(
+        (doc) => doc.id != customer.id,
+      );
+
+      if (duplicateExists) {
+        throw Exception('یہ فون نمبر کسی دوسرے کسٹمر کے نام پر پہلے سے رجسٹرڈ ہے۔');
+      }
+
+      await _customerCollection.doc(customer.id).update({
+        'name': customer.name.trim(),
+        'phone': normalizedPhone,
+        'address': customer.address.trim(),
+        'balance': customer.balance,
+        'updatedAt': Timestamp.fromDate(DateTime.now()),
+      });
+
+      _setLoading(false);
       return true;
     } catch (e) {
-      _isLoading = false;
-      _errorMessage = e.toString();
-      notifyListeners();
+      _setError('کسٹمر اپڈیٹ کرنے میں ناکامی: $e');
+      _setLoading(false);
       return false;
     }
   }
 
-  /// 4. Delete Customer
+  /// 🗑️ 4. کسٹمر کو ڈیلیٹ کریں
   Future<bool> deleteCustomer(String customerId) async {
+    _setLoading(true);
+    _errorMessage = null;
+
     try {
-      _isLoading = true;
-      notifyListeners();
+      if (customerId.trim().isEmpty) {
+        throw Exception('کسٹمر ID غائب ہے۔');
+      }
 
       await _customerCollection.doc(customerId).delete();
 
-      _isLoading = false;
-      notifyListeners();
+      _setLoading(false);
       return true;
     } catch (e) {
-      _isLoading = false;
-      _errorMessage = e.toString();
-      notifyListeners();
+      _setError('کسٹمر ڈیلیٹ کرنے میں ناکامی: $e');
+      _setLoading(false);
       return false;
     }
   }
 
-  /// 5. Update Customer Balance (Order create hone par ya Payment receiving par)
-  /// Positive amount = Udhaar / Khata barha
-  /// Negative amount = Payment aai / Balance kam hua
-  Future<bool> updateCustomerBalance(String customerId, double amountChange) async {
+  /// 💰 5. کسٹمر کا بیلنس اپڈیٹ کریں (آرڈر یا وصولی پر)
+  /// مثبت رقم (+) = ادھار میں اضافہ
+  /// منفی رقم (-) = نقد وصولی / بیلنس میں کمی
+  Future<bool> updateCustomerBalance(
+    String customerId,
+    double amountChange,
+  ) async {
     try {
+      if (customerId.trim().isEmpty) {
+        throw Exception('کسٹمر ID غائب ہے۔');
+      }
+
       await _customerCollection.doc(customerId).update({
         'balance': FieldValue.increment(amountChange),
       });
+
       return true;
     } catch (e) {
-      _errorMessage = e.toString();
-      notifyListeners();
+      _setError('کسٹمر کا بیلنس اپڈیٹ کرنے میں ناکامی: $e');
       return false;
     }
+  }
+
+  // 🛠️ Helper Methods
+  void _setLoading(bool value) {
+    _isLoading = value;
+    notifyListeners();
+  }
+
+  void _setError(String message) {
+    _errorMessage = message;
+    notifyListeners();
+  }
+
+  void clearError() {
+    _errorMessage = null;
+    notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _customersSubscription?.cancel();
+    super.dispose();
   }
 }

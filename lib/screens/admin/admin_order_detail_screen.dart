@@ -131,15 +131,23 @@ class _AdminOrderDetailScreenState extends State<AdminOrderDetailScreen> {
     );
   }
 
-  // 💵 Update Payment Logic
+  // 💵 Update Payment Logic (Updated with Ledger Integration Details)
   Future<void> _handlePaymentUpdate(double newPaidAmount) async {
     setState(() => _isUpdatingPayment = true);
 
     final provider = Provider.of<OrderProvider>(context, listen: false);
+
+    // پرانی رقم اور نئی وصول شدہ رقم کا فرق
+    final addedPayment = newPaidAmount - widget.order.paidAmount;
+
     final success = await provider.updatePaymentDetails(
       orderId: widget.order.id,
       newPaidAmount: newPaidAmount,
       totalAmount: widget.order.totalAmount,
+      customerName: widget.order.customerName,
+      customerPhone: widget.order.phone,
+      trackingId: widget.order.trackingId,
+      addedPayment: addedPayment,
     );
 
     setState(() => _isUpdatingPayment = false);

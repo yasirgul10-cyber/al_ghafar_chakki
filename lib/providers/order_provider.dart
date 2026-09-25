@@ -1,8 +1,9 @@
-import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import '../models/order_model.dart';
+import 'package:flutter/material.dart';
+
 import '../core/constants/app_strings.dart';
 import '../core/utils/tracking_id_generator.dart';
+import '../models/order_model.dart';
 
 class OrderProvider with ChangeNotifier {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -13,14 +14,16 @@ class OrderProvider with ChangeNotifier {
   bool get isLoading => _isLoading;
   String? get errorMessage => _errorMessage;
 
-  // 📞 نمبر کو تمام جگہوں کے لیے یکساں (Standard Format) کرنے کا فنکشن
+  // 📞 فون نمبر کو تمام جگہوں کے لیے یکساں (Standard Format) کرنے کا فنکشن
   String _formatPakistanPhone(String phone) {
     var value = phone.trim().replaceAll(RegExp(r'[\s-]'), '');
+
     if (value.startsWith('+92')) {
       value = value.substring(1);
     } else if (value.startsWith('0')) {
       value = '92${value.substring(1)}';
     }
+
     return value;
   }
 
@@ -32,13 +35,14 @@ class OrderProvider with ChangeNotifier {
 
     while (!isUnique && attempts < 10) {
       candidateId = TrackingIdGenerator.generate();
-      final docQuery = await _firestore
+
+      final query = await _firestore
           .collection('orders')
           .where('trackingId', isEqualTo: candidateId)
           .limit(1)
           .get();
 
-      if (docQuery.docs.isEmpty) {
+      if (query.docs.isEmpty) {
         isUnique = true;
       } else {
         attempts++;
@@ -53,7 +57,37 @@ class OrderProvider with ChangeNotifier {
     return candidateId;
   }
 
-  // 📝 Create Order with Automatic Ledger Entry Integration
+  // 👤 کسٹمر تلاش کریں یا نیا کسٹمر فائر اسٹور میں بنائیں
+  Future<DocumentReference<Map<String, dynamic>>> _findOrCreateCustomer({
+    required String customerName,
+    required String phone,
+  }) async {
+    final normalizedPhone = _formatPakistanPhone(phone);
+
+    final query = await _firestore
+        .collection('customers')
+        .where('phone', isEqualTo: normalizedPhone)
+        .limit(1)
+        .get();
+
+    if (query.docs.isNotEmpty) {
+      return query.docs.first.reference;
+    }
+
+    final customerRef = _firestore.collection('customers').doc();
+
+    await customerRef.set({
+      'name': customerName,
+      'phone': normalizedPhone,
+      'address': '',
+      'balance': 0.0,
+      'createdAt': Timestamp.fromDate(DateTime.now()),
+    });
+
+    return customerRef;
+  }
+
+  // 📝 Create Order with Atomic Write Batch & Customer Ledger Sync
   Future<OrderModel?> createOrder({
     required String customerName,
     required String phone,
@@ -67,8 +101,28 @@ class OrderProvider with ChangeNotifier {
     _errorMessage = null;
 
     try {
-      final trackingId = await _generateUniqueTrackingId();
+      // 🛑 ویلیڈیشنز (Validations)
+      if (customerName.trim().isEmpty) {
+        throw Exception('کسٹمر کا نام درج کرنا ضروری ہے۔');
+      }
 
+      if (phone.trim().isEmpty) {
+        throw Exception('کسٹمر کا فون نمبر درج کرنا ضروری ہے۔');
+      }
+
+      if (quantity <= 0) {
+        throw Exception('مقدار 0 سے زیادہ ہونی چاہیے۔');
+      }
+
+      if (ratePerKg < 0) {
+        throw Exception('ریٹ منفی نہیں ہو سکتا۔');
+      }
+
+      if (paidAmount < 0) {
+        throw Exception('ادا شدہ رقم منفی نہیں ہو سکتی۔');
+      }
+
+      // ⚖️ یونٹس کے مطابق KG میں کنورژن
       final quantityInKg = switch (unit) {
         AppStrings.unitGram => quantity / 1000.0,
         AppStrings.unitMann => quantity * 40.0,
@@ -77,20 +131,26 @@ class OrderProvider with ChangeNotifier {
 
       final totalAmount = quantityInKg * ratePerKg;
 
+      if (paidAmount > totalAmount) {
+        throw Exception('ادا شدہ رقم کل بل سے زیادہ نہیں ہو سکتی۔');
+      }
+
       final paymentStatus = paidAmount <= 0
           ? AppStrings.paymentUnpaid
           : paidAmount >= totalAmount
               ? AppStrings.paymentPaid
               : AppStrings.paymentPartial;
 
-      final docRef = _firestore.collection('orders').doc();
+      final trackingId = await _generateUniqueTrackingId();
       final now = DateTime.now();
+      final orderRef = _firestore.collection('orders').doc();
+      final normalizedPhone = _formatPakistanPhone(phone);
 
       final order = OrderModel(
-        id: docRef.id,
+        id: orderRef.id,
         trackingId: trackingId,
-        customerName: customerName,
-        phone: phone,
+        customerName: customerName.trim(),
+        phone: normalizedPhone,
         category: category,
         quantity: quantity,
         unit: unit,
@@ -103,28 +163,35 @@ class OrderProvider with ChangeNotifier {
         updatedAt: now,
       );
 
-      // 1️⃣ آرڈر کو فائر اسٹور میں محفوظ کریں
-      await docRef.set(order.toMap());
+      // 👤 کسٹمر ریفرنس حاصل کریں
+      final customerRef = await _findOrCreateCustomer(
+        customerName: customerName.trim(),
+        phone: normalizedPhone,
+      );
 
-      // 2️⃣ کھاتے (Ledger Transactions) میں خودکار اندراج
-      final formattedPhone = _formatPakistanPhone(phone);
-      final ledgerCollection = _firestore.collection('ledger_transactions');
+      // 🔄 WriteBatch شروع کریں (تمام آپریشنز ایک ساتھ ہوں گے)
+      final batch = _firestore.batch();
 
-      // 🅰️ ادھار اندراج (Debit Entry): آرڈر کا کل بل
-      await ledgerCollection.add({
-        'customerName': customerName,
-        'customerPhone': formattedPhone,
+      // 1️⃣ آرڈر محفوظ کریں
+      batch.set(orderRef, order.toMap());
+
+      // 2️⃣ ادھار اندراج (Debit Entry): کل بل کھاتے میں ڈالیں
+      final debitRef = _firestore.collection('ledger_transactions').doc();
+      batch.set(debitRef, {
+        'customerName': customerName.trim(),
+        'customerPhone': normalizedPhone,
         'description': 'آرڈر #$trackingId کا بل ($category)',
         'amount': totalAmount,
         'isCredit': false, // false = ادھار (Debit)
         'date': Timestamp.fromDate(now),
       });
 
-      // 🅱️ وصولی اندراج (Credit Entry): اگر کسٹمر نے موقع پر کچھ رقم ادا کی ہے
+      // 3️⃣ وصولی اندراج (Credit Entry): اگر موقع پر کچھ رقم ادا ہوئی ہے
       if (paidAmount > 0) {
-        await ledgerCollection.add({
-          'customerName': customerName,
-          'customerPhone': formattedPhone,
+        final creditRef = _firestore.collection('ledger_transactions').doc();
+        batch.set(creditRef, {
+          'customerName': customerName.trim(),
+          'customerPhone': normalizedPhone,
           'description': 'آرڈر #$trackingId کی نقد وصولی',
           'amount': paidAmount,
           'isCredit': true, // true = وصولی (Credit)
@@ -132,10 +199,21 @@ class OrderProvider with ChangeNotifier {
         });
       }
 
+      // 4️⃣ کسٹمر کے کل بقایا بیلنس کو اپڈیٹ کریں
+      final balanceChange = totalAmount - paidAmount;
+      if (balanceChange != 0) {
+        batch.update(customerRef, {
+          'balance': FieldValue.increment(balanceChange),
+        });
+      }
+
+      // 🚀 تمام تبدیلیاں ایک ساتھ فائر اسٹور میں سیو کریں
+      await batch.commit();
+
       _setLoading(false);
       return order;
     } catch (e) {
-      _setError('Failed to create order: $e');
+      _setError('آرڈر بنانے میں ناکامی: $e');
       _setLoading(false);
       return null;
     }
@@ -145,7 +223,10 @@ class OrderProvider with ChangeNotifier {
   Stream<OrderModel?> trackOrderByTrackingId(String trackingId) {
     return _firestore
         .collection('orders')
-        .where('trackingId', isEqualTo: trackingId.trim().toUpperCase())
+        .where(
+          'trackingId',
+          isEqualTo: trackingId.trim().toUpperCase(),
+        )
         .snapshots()
         .map((snapshot) {
       if (snapshot.docs.isNotEmpty) {
@@ -164,15 +245,23 @@ class OrderProvider with ChangeNotifier {
         .snapshots()
         .map((snapshot) {
       return snapshot.docs
-          .map((doc) => OrderModel.fromMap(doc.data(), doc.id))
+          .map(
+            (doc) => OrderModel.fromMap(
+              doc.data(),
+              doc.id,
+            ),
+          )
           .toList();
     });
   }
 
   // 🔄 Update Status with Validation
-  Future<bool> updateOrderStatus(String orderId, String newStatus) async {
+  Future<bool> updateOrderStatus(
+    String orderId,
+    String newStatus,
+  ) async {
     if (!AppStrings.orderStatuses.contains(newStatus)) {
-      _setError('Invalid status: $newStatus');
+      _setError('ناقابل قبول اسٹیٹس: $newStatus');
       return false;
     }
 
@@ -181,15 +270,16 @@ class OrderProvider with ChangeNotifier {
         'status': newStatus,
         'updatedAt': Timestamp.fromDate(DateTime.now()),
       });
+
       notifyListeners();
       return true;
     } catch (e) {
-      _setError('Failed to update status: $e');
+      _setError('اسٹیٹس اپڈیٹ میں ناکامی: $e');
       return false;
     }
   }
 
-  // 💵 Update Payment Details + Record Additional Payment in Ledger
+  // 💵 Update Payment Details + Atomic Ledger Integration
   Future<bool> updatePaymentDetails({
     required String orderId,
     required double newPaidAmount,
@@ -200,51 +290,90 @@ class OrderProvider with ChangeNotifier {
     double? addedPayment,
   }) async {
     try {
+      if (newPaidAmount < 0) {
+        _setError('ادا شدہ رقم منفی نہیں ہو سکتی۔');
+        return false;
+      }
+
+      if (newPaidAmount > totalAmount) {
+        _setError('ادا شدہ رقم کل بل سے زیادہ نہیں ہو سکتی۔');
+        return false;
+      }
+
       final paymentStatus = newPaidAmount <= 0
           ? AppStrings.paymentUnpaid
           : newPaidAmount >= totalAmount
               ? AppStrings.paymentPaid
               : AppStrings.paymentPartial;
 
-      await _firestore.collection('orders').doc(orderId).update({
+      final orderRef = _firestore.collection('orders').doc(orderId);
+      final batch = _firestore.batch();
+      final now = DateTime.now();
+
+      // 1️⃣ آرڈر کی رقم اپڈیٹ کریں
+      batch.update(orderRef, {
         'paidAmount': newPaidAmount,
         'paymentStatus': paymentStatus,
-        'updatedAt': Timestamp.fromDate(DateTime.now()),
+        'updatedAt': Timestamp.fromDate(now),
       });
 
-      // اگر بقایا رقم میں سے مزید وصولی ہوئی ہے تو اس کا بھی لیجر میں اندراج کریں
+      // 2️⃣ اگر مزید بقایا رقم موصول ہوئی ہے تو لیجر اور کسٹمر بیلنس اپڈیٹ کریں
       if (addedPayment != null &&
           addedPayment > 0 &&
           customerName != null &&
           customerPhone != null) {
-        final formattedPhone = _formatPakistanPhone(customerPhone);
-        await _firestore.collection('ledger_transactions').add({
+        final normalizedPhone = _formatPakistanPhone(customerPhone);
+
+        final paymentRef = _firestore.collection('ledger_transactions').doc();
+        batch.set(paymentRef, {
           'customerName': customerName,
-          'customerPhone': formattedPhone,
+          'customerPhone': normalizedPhone,
           'description': trackingId != null
               ? 'آرڈر #$trackingId کی بقایا وصولی'
               : 'آرڈر کی بقایا وصولی',
           'amount': addedPayment,
           'isCredit': true,
-          'date': Timestamp.fromDate(DateTime.now()),
+          'date': Timestamp.fromDate(now),
         });
+
+        // کسٹمر کا بیلنس کم (کمی/Minus) کریں
+        final customerQuery = await _firestore
+            .collection('customers')
+            .where(
+              'phone',
+              isEqualTo: normalizedPhone,
+            )
+            .limit(1)
+            .get();
+
+        if (customerQuery.docs.isNotEmpty) {
+          batch.update(
+            customerQuery.docs.first.reference,
+            {
+              'balance': FieldValue.increment(-addedPayment),
+            },
+          );
+        }
       }
+
+      await batch.commit();
 
       notifyListeners();
       return true;
     } catch (e) {
-      _setError('Failed to update payment: $e');
+      _setError('پیمنٹ اپڈیٹ میں ناکامی: $e');
       return false;
     }
   }
 
+  // 🛠️ Helper Methods
   void _setLoading(bool value) {
     _isLoading = value;
     notifyListeners();
   }
 
-  void _setError(String msg) {
-    _errorMessage = msg;
+  void _setError(String message) {
+    _errorMessage = message;
     notifyListeners();
   }
 
