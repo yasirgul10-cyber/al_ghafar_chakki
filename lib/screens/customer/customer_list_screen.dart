@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../models/customer_model.dart';
 import '../../providers/customer_provider.dart'; // 👈 کسٹمر پرووائیڈر کا امپورٹ
-import 'customer_ledger_screen.dart'; // 👈 کسٹمر لیجر اسکرین کا امپورٹ
+import '../ledger/customer_ledger_screen.dart'; // 👈 کسٹمر لیجر اسکرین کا امپورٹ
 
 class CustomerListScreen extends StatefulWidget {
   const CustomerListScreen({Key? key}) : super(key: key);
