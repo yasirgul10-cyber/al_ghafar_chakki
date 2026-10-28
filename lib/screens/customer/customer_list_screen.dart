@@ -7,7 +7,7 @@ import '../../providers/customer_provider.dart'; // 👈 کسٹمر پرووائ
 import '../ledger/customer_ledger_screen.dart'; // 👈 کسٹمر لیجر اسکرین کا امپورٹ
 
 class CustomerListScreen extends StatefulWidget {
-  const CustomerListScreen({Key? key}) : super(key: key);
+  const CustomerListScreen({super.key});
 
   @override
   State<CustomerListScreen> createState() => _CustomerListScreenState();
@@ -128,7 +128,7 @@ class _CustomerListScreenState extends State<CustomerListScreen> {
         borderRadius: BorderRadius.circular(16),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.15),
+            color: Colors.black.withValues(alpha: 0.15),
             blurRadius: 8,
             offset: const Offset(0, 4),
           ),
@@ -261,7 +261,7 @@ class _CustomerListScreenState extends State<CustomerListScreen> {
             children: [
               CircleAvatar(
                 radius: 24,
-                backgroundColor: const Color(0xFF1E3C72).withOpacity(0.1),
+                backgroundColor: const Color(0xFF1E3C72).withValues(alpha: 0.1),
                 child: Text(
                   customer.name.isNotEmpty ? customer.name[0] : 'C',
                   style: const TextStyle(
@@ -326,7 +326,7 @@ class _CustomerListScreenState extends State<CustomerListScreen> {
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                     decoration: BoxDecoration(
-                      color: balanceColor.withOpacity(0.1),
+                      color: balanceColor.withValues(alpha: 0.1),
                       borderRadius: BorderRadius.circular(8),
                     ),
                     child: Text(

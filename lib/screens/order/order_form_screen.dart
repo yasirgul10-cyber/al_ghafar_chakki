@@ -1,6 +1,13 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'package:intl/intl.dart';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
+
 import '../../core/constants/app_colors.dart';
 import '../../core/constants/app_strings.dart';
 import '../../models/order_model.dart';
@@ -54,7 +61,7 @@ class _OrderFormScreenState extends State<OrderFormScreen> {
     super.dispose();
   }
 
-  // 🔄 Swip to Refresh Function
+  // 🔄 Swipe to Refresh Function
   Future<void> _onRefresh() async {
     await Future.delayed(const Duration(milliseconds: 500));
     setState(() {
@@ -92,27 +99,166 @@ class _OrderFormScreenState extends State<OrderFormScreen> {
     return rem < 0 ? 0.0 : rem;
   }
 
-  void _submitOrder() async {
-    if (!_formKey.currentState!.validate()) return;
+  // 🖨️ Thermal Receipt Printing Method
+  Future<void> _printOrderReceipt(OrderModel order) async {
+    final pdf = pw.Document();
+    final formattedDate = DateFormat('dd MMM yyyy, hh:mm a').format(order.createdAt);
 
-    final provider = Provider.of<OrderProvider>(context, listen: false);
-
-    final createdOrder = await provider.createOrder(
-      customerName: _nameController.text.trim(),
-      phone: _phoneController.text.trim(),
-      category: _currentCategory,
-      quantity: double.tryParse(_quantityController.text) ?? 0.0,
-      unit: _selectedUnit,
-      ratePerKg: double.tryParse(_rateController.text) ?? 0.0,
-      paidAmount: _paidAmount,
+    pdf.addPage(
+      pw.Page(
+        pageFormat: PdfPageFormat.roll80,
+        margin: const pw.EdgeInsets.all(10),
+        build: (pw.Context context) {
+          return pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.center,
+            mainAxisSize: pw.MainAxisSize.min,
+            children: [
+              pw.Text(
+                'AL-GHAFFAR CHAKKI',
+                style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold),
+              ),
+              pw.SizedBox(height: 2),
+              pw.Text('Order Cash Receipt', style: const pw.TextStyle(fontSize: 9)),
+              pw.Divider(),
+              pw.Text(
+                'Tracking: ${order.trackingId}',
+                style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 11),
+              ),
+              pw.Text('Date: $formattedDate', style: const pw.TextStyle(fontSize: 8)),
+              pw.Divider(),
+              pw.Row(
+                mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                children: [
+                  pw.Text('Customer:', style: const pw.TextStyle(fontSize: 9)),
+                  pw.Text(order.customerName,
+                      style: pw.TextStyle(fontSize: 9, fontWeight: pw.FontWeight.bold)),
+                ],
+              ),
+              pw.Row(
+                mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                children: [
+                  pw.Text('Item:', style: const pw.TextStyle(fontSize: 9)),
+                  pw.Text('${order.category} (${order.quantity} ${order.unit})',
+                      style: const pw.TextStyle(fontSize: 9)),
+                ],
+              ),
+              pw.Row(
+                mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                children: [
+                  pw.Text('Rate:', style: const pw.TextStyle(fontSize: 9)),
+                  pw.Text('Rs ${order.ratePerKg.toStringAsFixed(1)}',
+                      style: const pw.TextStyle(fontSize: 9)),
+                ],
+              ),
+              pw.Divider(),
+              pw.Row(
+                mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                children: [
+                  pw.Text('Total Amount:',
+                      style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold)),
+                  pw.Text('Rs ${order.totalAmount.toStringAsFixed(1)}',
+                      style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold)),
+                ],
+              ),
+              pw.Row(
+                mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                children: [
+                  pw.Text('Paid:', style: const pw.TextStyle(fontSize: 9)),
+                  pw.Text('Rs ${order.paidAmount.toStringAsFixed(1)}',
+                      style: const pw.TextStyle(fontSize: 9)),
+                ],
+              ),
+              pw.Row(
+                mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                children: [
+                  pw.Text('Remaining:', style: const pw.TextStyle(fontSize: 9)),
+                  pw.Text('Rs ${order.remainingAmount.toStringAsFixed(1)}',
+                      style: const pw.TextStyle(fontSize: 9)),
+                ],
+              ),
+              pw.SizedBox(height: 8),
+              pw.Text('Shukriya! Phir Tashreef Layein.',
+                  style: const pw.TextStyle(fontSize: 8)),
+            ],
+          );
+        },
+      ),
     );
 
-    if (createdOrder != null && mounted) {
-      _showSuccessDialog(createdOrder);
-    } else if (mounted && provider.errorMessage != null) {
+    await Printing.layoutPdf(
+      onLayout: (PdfPageFormat format) async => pdf.save(),
+      name: 'Receipt_${order.trackingId}.pdf',
+    );
+  }
+
+  // 🚀 Safe Submit Order with Timeout & Exceptions
+  Future<void> _submitOrder() async {
+    if (!_formKey.currentState!.validate()) {
+      return;
+    }
+
+    final provider = Provider.of<OrderProvider>(
+      context,
+      listen: false,
+    );
+
+    try {
+      final createdOrder = await provider
+          .createOrder(
+            customerName: _nameController.text.trim(),
+            phone: _phoneController.text.trim(),
+            category: _currentCategory,
+            quantity: double.tryParse(_quantityController.text) ?? 0.0,
+            unit: _selectedUnit,
+            ratePerKg: double.tryParse(_rateController.text) ?? 0.0,
+            paidAmount: _paidAmount,
+          )
+          .timeout(
+            const Duration(seconds: 30),
+          );
+
+      if (!mounted) {
+        return;
+      }
+
+      if (createdOrder != null) {
+        _showSuccessDialog(createdOrder);
+        return;
+      }
+
+      final error = provider.errorMessage ??
+          'آرڈر محفوظ نہیں ہو سکا۔ دوبارہ کوشش کریں۔';
+
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(provider.errorMessage!),
+          content: Text(error),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } on TimeoutException {
+      if (!mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Firebase سے جواب آنے میں زیادہ وقت لگ رہا ہے۔ '
+            'Internet connection اور Firebase configuration چیک کریں۔',
+          ),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'آرڈر محفوظ کرتے وقت مسئلہ آیا: $e',
+          ),
           backgroundColor: Colors.red,
         ),
       );
@@ -120,13 +266,15 @@ class _OrderFormScreenState extends State<OrderFormScreen> {
   }
 
   void _showSuccessDialog(OrderModel order) {
+    final formattedDateTime = DateFormat('dd MMM yyyy, hh:mm a').format(order.createdAt);
+
     showDialog(
       context: context,
       barrierDismissible: false,
       builder: (ctx) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: Row(
-          children: const [
+        title: const Row(
+          children: [
             Icon(Icons.check_circle_rounded, color: AppColors.secondary, size: 28),
             SizedBox(width: 8),
             Text('آرڈر محفوظ ہو گیا!', style: TextStyle(fontSize: 18)),
@@ -136,70 +284,170 @@ class _OrderFormScreenState extends State<OrderFormScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              // Tracking ID Container with Copy Button
               Container(
-                padding: const EdgeInsets.all(12),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                 decoration: BoxDecoration(
                   color: AppColors.lightBg,
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: AppColors.primary.withOpacity(0.3)),
+                  border: Border.all(color: AppColors.primary.withValues(alpha: 0.3)),
                 ),
                 child: Column(
                   children: [
-                    const Text('ٹریکنگ آئی ڈی (Tracking ID)'),
-                    SelectableText(
-                      order.trackingId,
-                      style: const TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                        color: AppColors.primary,
-                      ),
+                    const Text(
+                      'ٹریکنگ آئی ڈی (Tracking ID)',
+                      style: TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
+                    const SizedBox(height: 4),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Flexible(
+                          child: SelectableText(
+                            order.trackingId,
+                            style: const TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                              color: AppColors.primary,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        InkWell(
+                          onTap: () {
+                            Clipboard.setData(ClipboardData(text: order.trackingId));
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text('Tracking ID (${order.trackingId}) copy ho gayi hai!'),
+                                duration: const Duration(seconds: 2),
+                                behavior: SnackBarBehavior.floating,
+                                backgroundColor: AppColors.primary,
+                              ),
+                            );
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.all(4),
+                            decoration: BoxDecoration(
+                              color: AppColors.primary.withValues(alpha: 0.1),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: const Icon(
+                              Icons.copy_rounded,
+                              size: 18,
+                              color: AppColors.primary,
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ],
                 ),
               ),
-              const SizedBox(height: 16),
-              // Dynamic QR Code for generated tracking ID
+
+              const SizedBox(height: 12),
+
+              // QR Code
               SizedBox(
-                height: 150,
-                width: 150,
+                height: 130,
+                width: 130,
                 child: QrImageView(
                   data: order.trackingId,
                   version: QrVersions.auto,
-                  size: 150.0,
+                  size: 130.0,
                 ),
               ),
+
               const SizedBox(height: 12),
-              Text(
-                'کسٹمر: ${order.customerName}\nکل رقم: Rs ${order.totalAmount.toStringAsFixed(1)}',
-                textAlign: TextAlign.center,
-                style: const TextStyle(fontWeight: FontWeight.w500),
+
+              // Customer Details & Date Time Box
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade100,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Column(
+                  children: [
+                    Text(
+                      'کسٹمر: ${order.customerName}',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'کل رقم: Rs ${order.totalAmount.toStringAsFixed(1)} | وصول: Rs ${order.paidAmount.toStringAsFixed(1)}',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                    const Divider(height: 12),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Icon(Icons.access_time_rounded, size: 14, color: Colors.grey),
+                        const SizedBox(width: 4),
+                        Text(
+                          formattedDateTime,
+                          style: const TextStyle(fontSize: 11, color: Colors.grey, fontWeight: FontWeight.w500),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
               ),
             ],
           ),
         ),
+        actionsAlignment: MainAxisAlignment.center,
+        actionsOverflowButtonSpacing: 8,
         actions: [
-          TextButton(
-            onPressed: () {
-              Navigator.pop(ctx);
-              Navigator.pop(context);
-            },
-            child: const Text('ہوم پر جائیں'),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.primary,
-              foregroundColor: Colors.white,
-            ),
-            onPressed: () {
-              Navigator.pop(ctx);
-              Navigator.pushReplacement(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => TrackingScreen(trackingId: order.trackingId),
+          Row(
+            children: [
+              Expanded(
+                child: ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.blue.shade700,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                  onPressed: () => _printOrderReceipt(order),
+                  icon: const Icon(Icons.print_rounded, size: 18),
+                  label: const Text('پرنٹ انوائس'),
                 ),
-              );
-            },
-            child: const Text('لائیو ٹریکنگ دیکھیں'),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.primary,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    Navigator.pushReplacement(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => TrackingScreen(trackingId: order.trackingId),
+                      ),
+                    );
+                  },
+                  icon: const Icon(Icons.my_location_rounded, size: 18),
+                  label: const Text('لائیو ٹریکنگ'),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Center(
+            child: TextButton(
+              onPressed: () {
+                Navigator.pop(ctx);
+                Navigator.pop(context);
+              },
+              child: const Text('ہوم پر جائیں', style: TextStyle(color: Colors.grey)),
+            ),
           ),
         ],
       ),
@@ -212,6 +460,9 @@ class _OrderFormScreenState extends State<OrderFormScreen> {
 
     return Scaffold(
       appBar: AppBar(
+        toolbarHeight: 53.0,
+        elevation: 0,
+        scrolledUnderElevation: 0,
         title: const Text('نیا آرڈر فارم (New Order)'),
         backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
@@ -239,14 +490,23 @@ class _OrderFormScreenState extends State<OrderFormScreen> {
                       child: DropdownButton<String>(
                         value: _currentCategory,
                         isExpanded: true,
+                        isDense: true,
                         items: const [
                           DropdownMenuItem(
                             value: AppStrings.categoryWheat,
-                            child: Text('🌾 ' + AppStrings.categoryWheat),
+                            child: Text(
+                              '🌾 آٹا پسائی (Wheat Grinding)',
+                              overflow: TextOverflow.ellipsis,
+                              maxLines: 1,
+                            ),
                           ),
                           DropdownMenuItem(
                             value: AppStrings.categorySpices,
-                            child: Text('🌶️ ' + AppStrings.categorySpices),
+                            child: Text(
+                              '🌶️ مصالحہ پسائی (Spices Grinding)',
+                              overflow: TextOverflow.ellipsis,
+                              maxLines: 1,
+                            ),
                           ),
                         ],
                         onChanged: (val) {
@@ -290,6 +550,7 @@ class _OrderFormScreenState extends State<OrderFormScreen> {
                             labelText: 'کسٹمر کا نام (Customer Name)',
                             prefixIcon: Icon(Icons.person_rounded),
                             border: OutlineInputBorder(),
+                            contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
                           ),
                           validator: (val) =>
                               val == null || val.trim().isEmpty ? 'نام درج کریں' : null,
@@ -302,6 +563,7 @@ class _OrderFormScreenState extends State<OrderFormScreen> {
                             labelText: 'موبائل نمبر (Mobile Number)',
                             prefixIcon: Icon(Icons.phone_rounded),
                             border: OutlineInputBorder(),
+                            contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
                           ),
                           validator: (val) =>
                               val == null || val.trim().isEmpty ? 'نمبر درج کریں' : null,
@@ -336,13 +598,14 @@ class _OrderFormScreenState extends State<OrderFormScreen> {
                         Row(
                           children: [
                             Expanded(
-                              flex: 2,
                               child: TextFormField(
                                 controller: _quantityController,
                                 keyboardType: const TextInputType.numberWithOptions(decimal: true),
                                 decoration: const InputDecoration(
                                   labelText: 'مقدار (Quantity)',
                                   border: OutlineInputBorder(),
+                                  isDense: true,
+                                  contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 12),
                                 ),
                                 onChanged: (_) => setState(() {}),
                                 validator: (val) {
@@ -354,25 +617,27 @@ class _OrderFormScreenState extends State<OrderFormScreen> {
                             ),
                             const SizedBox(width: 8),
                             Expanded(
-                              flex: 2,
                               child: DropdownButtonFormField<String>(
-                                value: _selectedUnit,
+                                initialValue: _selectedUnit,
+                                isExpanded: true,
                                 decoration: const InputDecoration(
                                   labelText: 'اکائی (Unit)',
                                   border: OutlineInputBorder(),
+                                  isDense: true,
+                                  contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 12),
                                 ),
                                 items: const [
                                   DropdownMenuItem(
                                     value: AppStrings.unitKg,
-                                    child: Text('KG'),
+                                    child: Text('KG', overflow: TextOverflow.ellipsis),
                                   ),
                                   DropdownMenuItem(
                                     value: AppStrings.unitGram,
-                                    child: Text('Gram'),
+                                    child: Text('Gram', overflow: TextOverflow.ellipsis),
                                   ),
                                   DropdownMenuItem(
                                     value: AppStrings.unitMann,
-                                    child: Text('Mann (40 KG)'),
+                                    child: Text('Mann (40 KG)', overflow: TextOverflow.ellipsis),
                                   ),
                                 ],
                                 onChanged: (val) {
@@ -397,6 +662,8 @@ class _OrderFormScreenState extends State<OrderFormScreen> {
                                   labelText: 'ریٹ فی کلو',
                                   prefixText: 'Rs ',
                                   border: OutlineInputBorder(),
+                                  isDense: true,
+                                  contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 12),
                                 ),
                                 onChanged: (_) => setState(() {}),
                                 validator: (val) {
@@ -415,6 +682,8 @@ class _OrderFormScreenState extends State<OrderFormScreen> {
                                   labelText: 'وصول شدہ (Paid)',
                                   prefixText: 'Rs ',
                                   border: OutlineInputBorder(),
+                                  isDense: true,
+                                  contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 12),
                                 ),
                                 onChanged: (_) => setState(() {}),
                               ),

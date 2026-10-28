@@ -25,11 +25,11 @@ class CustomerLedgerScreen extends StatefulWidget {
 }
 
 class _CustomerLedgerScreenState extends State<CustomerLedgerScreen> {
-  // 📝 نیا اندراج شامل کرنے کا ڈائیلاگ (Validated)
-  void _showAddTransactionDialog(BuildContext context) {
+  // 📝 نیا اندراج شامل کرنے کا ڈائیلاگ (Validated & Async Safe)
+  void _showAddTransactionDialog() {
     final descController = TextEditingController();
     final amountController = TextEditingController();
-    bool isCreditEntry = false; // Defualt: Debit (ادھار)
+    bool isCreditEntry = false; // Default: Debit (ادھار)
 
     showDialog(
       context: context,
@@ -149,7 +149,10 @@ class _CustomerLedgerScreenState extends State<CustomerLedgerScreen> {
                   final ledgerProvider = context.read<LedgerProvider>();
                   final success = await ledgerProvider.addTransaction(newTransaction);
 
-                  if (mounted && !success) {
+                  // 🔒 Exact State.context Guard
+                  if (!mounted) return;
+
+                  if (!success) {
                     ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(content: Text('اندراج محفوظ کرنے میں ناکامی ہوئی')),
                     );
@@ -191,22 +194,20 @@ class _CustomerLedgerScreenState extends State<CustomerLedgerScreen> {
       if (await canLaunchUrl(whatsappUri)) {
         await launchUrl(whatsappUri, mode: LaunchMode.externalApplication);
       } else {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('واٹس ایپ ایپلیکیشن کھولنا ممکن نہیں ہے')),
-          );
-        }
-      }
-    } catch (e) {
-      if (mounted) {
+        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('ایرر: $e')),
+          const SnackBar(content: Text('واٹس ایپ ایپلیکیشن کھولنا ممکن نہیں ہے')),
         );
       }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('ایرر: $e')),
+      );
     }
   }
 
-  // 🖨️ پی ڈی ایف رپورٹ (English Labels for Standard PDF Support)
+  // 🖨️ پی ڈی ایف رپورٹ
   Future<void> _printLedgerPdf(List<LedgerTransaction> transactions,
       double totalDebit, double totalCredit, double remainingBalance) async {
     final pdf = pw.Document();
@@ -359,10 +360,10 @@ class _CustomerLedgerScreenState extends State<CustomerLedgerScreen> {
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
-                  color: AppColors.primary.withOpacity(0.08),
+                  color: AppColors.primary.withValues(alpha: 0.08),
                   border: Border(
                     bottom: BorderSide(
-                      color: AppColors.primary.withOpacity(0.2),
+                      color: AppColors.primary.withValues(alpha: 0.2),
                     ),
                   ),
                 ),
@@ -455,7 +456,7 @@ class _CustomerLedgerScreenState extends State<CustomerLedgerScreen> {
             ],
           ),
           floatingActionButton: FloatingActionButton.extended(
-            onPressed: () => _showAddTransactionDialog(context),
+            onPressed: _showAddTransactionDialog,
             backgroundColor: AppColors.primary,
             foregroundColor: Colors.white,
             icon: const Icon(Icons.add_rounded),

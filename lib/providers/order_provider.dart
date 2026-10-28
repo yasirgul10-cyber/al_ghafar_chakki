@@ -210,12 +210,13 @@ class OrderProvider with ChangeNotifier {
       // 🚀 تمام تبدیلیاں ایک ساتھ فائر اسٹور میں سیو کریں
       await batch.commit();
 
-      _setLoading(false);
       return order;
     } catch (e) {
-      _setError('آرڈر بنانے میں ناکامی: $e');
-      _setLoading(false);
+      _setError('آرڈر بنانے میں ناکامی: ${e.toString().replaceAll('Exception: ', '')}');
       return null;
+    } finally {
+      // 🔒 گارنٹی شدہ ریسیٹ: چاہے Success ہو یا Error/Timeout، Loading لازمی OFF ہو گی
+      _setLoading(false);
     }
   }
 

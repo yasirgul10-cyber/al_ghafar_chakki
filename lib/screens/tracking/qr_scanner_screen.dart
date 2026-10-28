@@ -56,7 +56,7 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
             child: Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.7), // ✅ Fixed here
+                color: Colors.black.withValues(alpha: 0.7), // ✅ Fixed here
                 borderRadius: BorderRadius.circular(12),
               ),
               child: const Text(

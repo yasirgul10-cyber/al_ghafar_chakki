@@ -25,7 +25,25 @@ class LedgerProvider with ChangeNotifier {
     return value;
   }
 
-  /// 🔄 کسٹمر کے تمام لیجر ٹرانزیکشنز کا ریئل ٹائم اسٹریم (تازہ ترین اندراج اوپر آئے گا)
+  /// 🔄 تمام کسٹمرز کے تمام لیجر ٹرانزیکشنز کا ریئل ٹائم اسٹریم (تازہ ترین اندراج اوپر آئے گا)
+  Stream<List<LedgerTransaction>> getAllLedgerTransactionsStream() {
+    return _firestore
+        .collection('ledger_transactions')
+        .orderBy('date', descending: true)
+        .snapshots()
+        .map((snapshot) {
+      return snapshot.docs
+          .map(
+            (doc) => LedgerTransaction.fromMap(
+              doc.data(),
+              doc.id,
+            ),
+          )
+          .toList();
+    });
+  }
+
+  /// 🔄 مخصوص کسٹمر کے تمام لیجر ٹرانزیکشنز کا ریئل ٹائم اسٹریم (تازہ ترین اندراج اوپر آئے گا)
   Stream<List<LedgerTransaction>> getCustomerLedgerStream(
     String customerPhone,
   ) {
